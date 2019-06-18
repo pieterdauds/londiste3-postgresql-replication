@@ -1,4 +1,4 @@
-1) !!!!!!!!!!!!!!!!!!!!! APLIKASI YANG DIBUTUHKAN !!!!!!!!!!!!!!!!!!!!!!!!!
+1) !!!!!!!!!!!!!!!!!!!!! TOOLS YANG DIBUTUHKAN !!!!!!!!!!!!!!!!!!!!!!!!!
 
 #Download Londiste(Skytools 3) di PGFoundry
 wget http://pgfoundry.org/frs/download.php/3622/skytools-3.1.tar.gz

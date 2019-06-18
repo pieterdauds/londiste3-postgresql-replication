@@ -1,0 +1,255 @@
+1) !!!!!!!!!!!!!!!!!!!!! APLIKASI YANG DIBUTUHKAN !!!!!!!!!!!!!!!!!!!!!!!!!
+
+#Download Londiste(Skytools 3) di PGFoundry
+wget http://pgfoundry.org/frs/download.php/3622/skytools-3.1.tar.gz
+
+#Download Psychopg
+wget http://initd.org/psycopg/tarballs/PSYCOPG-2-4/psycopg2-2.4.2.tar.gz
+
+#Install Python
+yum install python
+
+2) !!!!!!!!!! pg_hba.conf(lakukan di kedua cluster/server) !!!!!!!!!!!!!!!
+
+#Localhost
+local    replication     postgres        127.0.0.1/32            trust
+
+#Host
+host    replication     postgres        192.168.xxx.xxx/32            trust
+
+3) !!!!!!!!!!!!!!!!!!!!!!!!!!!!!! INSTALL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+#Install Python Kernel Devel
+sudo yum -y install gcc gcc-c++ kernel-devel
+sudo yum -y install python-devel libxslt-devel libffi-devel openssl-devel
+pip install "your python packet"
+
+#install skytools(install di kedua cluster/server)
+tar -xzvf skytools-3.1.tar.gz
+
+Add to ”sql/pgq/triggers/common.c” (in the skytools source directory) the following line:
+=>> #include "access/htup_details.h" <<=
+
+mkdir /usr/local/pgsql/9.2.3/Sky
+cd skytools-3.1
+./configure --prefix=/usr/local/pgsql/9.2.3/Sky --with-pgconfig=/usr/local/pgsql/9.2.3/bin/pg_config
+make
+make install
+
+#install Psychopg(install di kedua cluster/server)
+tar -xvf psycopg2-2.4.2.tar.gz
+cd psycopg2-2.4.2
+
+add path in ==>> setup.cfg
+pg_config = /usr/local/pgsql/9.2.3/bin/pg_config
+
+python setup.py install --prefix=/usr/local/pgsql/9.2.3/Sky/lib64
+python setup.py build_ext --pg-config /usr/local/pgsql/9.2.3/bin/pg_config
+yum install build-dep python-psycopg2
+
+#Give Ownership
+chown -R postgres:postgres /usr/local/pgsql/9.2.3/Sky
+chown -R postgres:postgres /usr/local/pgsql/9.5.7/Sky
+
+!!!!!!!!!!!!!!!!!!!!!!!!!! .bash_profile !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+#edit .bash_profile
+su - postgres
+vi ~/.bash_profile
+
+#export command in .bash_profile
+export PYTHONPATH=/usr/local/pgsql/9.2.3/Sky/lib64/python2.7/site-packages/
+export LD_LIBRARY_PATH=/usr/local/pgsql/9.2.3/lib:/usr/lib/
+
+!!!!!!!!!!!!!!!!!!! Copy External Library !!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+cp /usr/local/pgsql/9.2.3/Sky/lib/python2.7/site-packages/* /usr/local/pgsql/9.2.3/Sky/lib64/python2.7/site-packages/
+cp /usr/local/pgsql/9.5.7/Sky/lib/python2.7/site-packages/* /usr/local/pgsql/9.5.7/Sky/lib64/python2.7/site-packages/
+
+!!!!!!!!!!!!!!! IMPORT DUMMY(jika dibutuhkan) !!!!!!!!!!!!!!!!!!!!!!!
+
+#lakukan proses ini di master
+psql -f filename.sql -d dbname -p 54xx
+\c dbname
+alter database dbname set search_path to schemaname;
+
+!!!!!!!!!!!!!!!!!!!! copy struktur database !!!!!!!!!!!!!!!!!!!!!!!!!
+
+#lakukan proses ini di slave (syarat utuk replikasi, pada database slave harus memiliki database dengan struktur yang sama seperti database yang di master)
+./pg_dump -s --schema=schemaname -h 127.0.0.1 -p 5432 postgres | ./psql -h 127.0.0.1 -p 5433 test1
+
+!!!!!!!!!!!!!!!!!!!!!!!!!! ticker.ini !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+#create file ticker.ini
+cd /usr/local/pgsql/9.2.3/Sky/bin
+vi ticker.ini
+
+#dibawah ini adalah isi dari dari ticker.ini pada cluster A
+[pgqd]
+
+base_connstr = user=postgres host=127.0.0.1
+database_list = postgres
+logfile = log/%(job_name)s.log
+pidfile = pid/%(job_name)s.pid
+
+#create log & pid directory
+mkdir log pid
+
+#dibawah ini adalah isi dari dari ticker.ini pada cluster B
+[pgqd]
+
+base_connstr = user=postgres host=127.0.0.1 port=5433
+database_list = test1
+logfile = log/%(job_name)s.log
+pidfile = pid/%(job_name)s.pid
+
+#create log & pid directory
+mkdir log pid
+
+//catatan : setiap cluster/server harus memiliki ticker sendiri (database_list adalah nama database yang akan dijadikan obyek replikasi pada cluster/server masing2)
+
+!!!!!!!!!!!!!!!!!!!!!!!!! master.ini !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+[londiste3]
+
+db = user=postgres host=127.0.0.1 port=5432 dbname=postgres
+queue_name = postgres
+loop_delay = 0.5
+logfile = log/master.log
+pidfile = pid/master.pid
+
+!!!!!!!!!!!!!!!!!!!!!!!!!! slave.ini !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+[londiste3]
+
+db = user=postgres host=127.0.0.1 port=5433 dbname=test1
+queue_name = postgres
+loop_delay = 0.5
+logfile = log/slave.log
+pidfile = pid/slave.pid
+
+//catatan : file master dan slave disimpan di masing2 cluster/server
+
+!!!!!!!!!!!!!!!!!!!!!!! START REPLICATION !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+#start tciker
+./pgqd -d ticker.ini
+
+#init master.ini as root
+./londiste3 master.ini create-root master 'user=postgres host=127.0.0.1 dbname=postgres'
+
+#init slave as leaf or branch(gunakan tipe BRANCH untuk mode failover)
+./londiste3 slave.ini create-leaf slave 'user=postgres port=5433 host=127.0.0.1 dbname=test1' --provider='user=postgres host=127.0.0.1 dbname=postgres'
+
+atau
+
+./londiste3 slave.ini create-branch slave 'user=postgres port=5433 host=127.0.0.1 dbname=test1' --provider='user=postgres host=127.0.0.1 dbname=postgres'
+
+#set slave.ini as worker
+./londiste3 -d master.ini worker
+./londiste3 -d slave.ini worker
+
+#add all table (table yang akan di replikasi harus memiliki primary key)
+./londiste3 master.ini add-table --all
+./londiste3 slave.ini add-table --all
+
+atau
+
+#add one table
+./londiste3 master.ini add-table tablename
+./londiste3 master.ini add-table tablename
+
+#add table sequence for master and slave
+./londiste3 master.ini add-seq --all
+./londiste3 slave.ini add-seq --all
+
+
+////////////////////////////////////////////////////////////////////////////(((FINISH)))/////////////////////////////////////////////////////////////////
+
+
+!!!!!!!!!!!!!!!!!!!!!!! OPTION REPLICATION !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+#switchover master ( formatnya node nya harus branch )
+./londiste3 slave.ini takeover master
+
+#switchback master
+./londiste3 slave.ini takeover slave
+
+#menghapus table replikasi
+./londiste3 master.ini remove-table tablename
+
+#resync
+./londiste3 slave.ini resync --all
+
+#cek status replikasi
+./londiste3 slave.ini status
+
+#cek status table
+./londiste3 master.ini tables
+
+#row count antar cluster/server
+./londiste3 slave.ini compare
+
+#drop node (branch or leaf)
+./londiste3 slave.ini drop-branch slave
+
+atau
+
+./londiste3 slave.ini drop-leaf slave
+
+#view status, nodename dll :
+select * from pgq_node.node_location;
+
+#query untuk mengetahui table yang tidak memiliki primary key
+SELECT
+    n.nspname as schema,
+    c.relname as table
+FROM
+    pg_class c
+JOIN
+    pg_namespace n
+ON
+    n.oid = c.relnamespace
+WHERE
+    c.relkind = 'r'
+AND NOT EXISTS (
+    SELECT
+        1
+    FROM
+        pg_constraint con
+    WHERE
+        con.conrelid = c.oid
+    AND
+        con.contype = 'p'
+)
+AND n.nspname <> ALL (
+    ARRAY [
+        'pg_catalog',
+        'sys',
+        'dbo',
+        'information_schema'
+    ]
+);
+
+#Query untuk backup User, Login roles, dan group Roles
+pg_dumpall --globals-only > /path/nama.sql
+
+#Query untuk backup user
+pg_dumpall --roles-only > /path/nama.sql
+
+#Count Database in schema
+select count(1) from information_schema.tables where table_schema='public' and table_type='BASE TABLE';
+
+#Show database size(MB/GB/TB)
+select pg_size_pretty(pg_database_size('outlet')) as fulltblsize;
+
+#Show Disk Space (OS)
+du -sh
+
+Sumber :
+#replikasi
+https://www.openscg.com/2016/04/logical-replication-with-skytools3/
+https://blog.lateral.io/2015/09/postgresql-replication-with-londiste-from-skytools-3/
+
+#library source code installer(ketika terjadi error pada saat menaikkan slave)
+https://jmorano.moretrix.com/2014/11/skytools-2-x-patch-for-postgresql-9-3-5/
